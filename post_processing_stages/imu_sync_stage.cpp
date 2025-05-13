@@ -281,8 +281,8 @@ bool IMURecordingStage::decode_imu_interp(int64_t cam_ts, uint32_t frame_no,
     auto acc16  = [&](uint8_t *d,int o){return to_int16(d[o+1],d[o+2]);};
     auto gyro16 = [&](uint8_t *d,int o){return to_int16(d[o+7],d[o+8]);};
 
-    double time_between_samples = 1.0 / 500;      // 500 Hz → 2 ms
-    double ODR_us  = time_between_samples * 1e6;  // 2000 µs
+    double time_between_samples = 1.0 / 200;      // 200 Hz ODR
+    double ODR_us  = time_between_samples * 1e6;  // 5000 µs
     uint16_t FSYNC_delta = (current_data[14] << 8) | current_data[15];
     double factor = (ODR_us - FSYNC_delta) / ODR_us;
 
