@@ -337,10 +337,10 @@ void IMURecordingStage::initialize_imu()
 
     // 200Hz ODR (0x0F) | FS bits in [5:4]
     write_reg(ICM42688_GYRO_CONFIG0,
-              static_cast<uint8_t>((gyro_fs_code_ << 4) | 0x0F));
+              static_cast<uint8_t>((gyro_fs_code_ << 5) | 0x0F));
 
     write_reg(ICM42688_ACCEL_CONFIG0,
-              static_cast<uint8_t>((acc_fs_code_  << 4) | 0x0F));
+              static_cast<uint8_t>((acc_fs_code_  << 5) | 0x0F));
 
 
     write_reg(ICM42688_FIFO_CONFIG1,      0x0F);        // enable gyro+acc+temp+FSYNC
