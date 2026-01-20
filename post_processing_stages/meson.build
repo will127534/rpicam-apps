@@ -19,6 +19,7 @@ core_postproc_src = files([
     'motion_detect_stage.cpp',
     'negate_stage.cpp',
     'acoustic_focus_stage.cpp',
+    'imu_sync_stage.cpp',
 ])
 
 # Core assets
@@ -132,6 +133,7 @@ post_processing_headers = files([
     'pwl.hpp',
     'segmentation.hpp',
     'tf_stage.hpp',
+    'ICM42688_registers.hpp'
 ])
 
 install_headers(post_processing_headers, subdir: meson.project_name() / 'post_processing_stages')
