@@ -20,6 +20,7 @@ core_postproc_src = files([
     'negate_stage.cpp',
     'acoustic_focus_stage.cpp',
     'imu_sync_stage.cpp',
+    'lut3d_stage.cpp',
 ])
 
 # Core assets
@@ -28,6 +29,7 @@ postproc_assets += files([
     assets_dir / 'motion_detect.json',
     assets_dir / 'negate.json',
     assets_dir / 'acoustic_focus.json',
+    assets_dir / 'lut3d.json',
 ])
 
 core_postproc_lib = shared_module('core-postproc', core_postproc_src,

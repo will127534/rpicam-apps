@@ -1,0 +1,9 @@
+{
+    "lut3d":
+    {
+        "lut_directory": "/home/pi/luts/3dlut",
+        "lut_name": "3DLUT6",
+        "control_file": "/tmp/rpicam_lut",
+        "enabled": true
+    }
+}
