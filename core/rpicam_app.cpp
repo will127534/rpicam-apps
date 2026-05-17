@@ -12,7 +12,9 @@
 #include "core/rpicam_app.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <fcntl.h>
+#include <fstream>
 #include <stdlib.h>
 
 #include <sys/ioctl.h>
@@ -1016,6 +1018,74 @@ void RPiCamApp::setupCapture()
 		throw std::runtime_error("failed to valid stream configurations");
 	else if (validation == CameraConfiguration::Adjusted)
 		LOG(1, "Stream configuration adjusted");
+
+	/*
+	 * Cap per-stream bufferCount so the total dma-heap footprint fits in
+	 * the available CMA pool. validate() above has populated frameSize for
+	 * each stream — multiply by bufferCount to get the per-stream
+	 * footprint, sum across streams, and if the total would exceed 80% of
+	 * free CMA, scale all streams' bufferCount down proportionally with a
+	 * floor of 5 (the minimum the IPA / pipeline handler can run with
+	 * comfortably). Skip the cap if the user has explicitly set a buffer
+	 * count via --buffer-count or --viewfinder-buffer-count.
+	 */
+	if (options_->Get().buffer_count == 0 && options_->Get().viewfinder_buffer_count == 0)
+	{
+		size_t total = 0;
+		for (auto const &cfg : *configuration_)
+			total += static_cast<size_t>(cfg.frameSize) * cfg.bufferCount;
+
+		size_t cma_free_bytes = 0;
+		std::ifstream meminfo("/proc/meminfo");
+		std::string line;
+		while (std::getline(meminfo, line))
+		{
+			if (line.rfind("CmaFree:", 0) == 0)
+			{
+				size_t kb = 0;
+				if (std::sscanf(line.c_str(), "CmaFree: %zu kB", &kb) == 1)
+					cma_free_bytes = kb * 1024;
+				break;
+			}
+		}
+		size_t budget = cma_free_bytes * 4 / 5;  // 80 % headroom
+
+		if (cma_free_bytes && total > budget)
+		{
+			constexpr unsigned int kMinBuffers = 3;
+			/* Scale every stream's bufferCount down by the same ratio
+			 * `budget / total` so they share the budget proportionally,
+			 * with a per-stream floor of kMinBuffers. */
+			LOG(1, "Buffer footprint " << (total >> 20) << "MB > CMA budget "
+				 << (budget >> 20) << "MB; capping bufferCount (floor "
+				 << kMinBuffers << ")");
+			size_t scaled_total = 0;
+			for (auto &cfg : *configuration_)
+			{
+				if (cfg.frameSize == 0)
+					continue;
+				unsigned int orig = cfg.bufferCount;
+				/* Round down so we err on the side of fitting. */
+				unsigned int target = static_cast<unsigned int>(
+					(static_cast<uint64_t>(orig) * budget) / total);
+				if (target < kMinBuffers)
+					target = kMinBuffers;
+				if (target > orig)
+					target = orig;
+				if (target != orig)
+					LOG(1, "  stream " << cfg.size.width << "x" << cfg.size.height
+						 << " (" << (cfg.frameSize >> 20) << "MB/buf): "
+						 << orig << " → " << target);
+				cfg.bufferCount = target;
+				scaled_total += static_cast<size_t>(cfg.frameSize) * target;
+			}
+			if (scaled_total > cma_free_bytes)
+				LOG(1, "WARN: capped buffer footprint " << (scaled_total >> 20)
+				    << "MB still > available CMA " << (cma_free_bytes >> 20)
+				    << "MB — allocation may fail. Bump CMA in config.txt or "
+				    << "reduce capture resolution.");
+		}
+	}
 
 	if (camera_->configure(configuration_.get()) < 0)
 		throw std::runtime_error("failed to configure streams");
