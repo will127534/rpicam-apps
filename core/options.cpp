@@ -125,7 +125,17 @@ static int xioctl(int fd, unsigned long ctl, void *arg)
 	return ret;
 }
 
-static bool set_imx708_subdev_hdr_ctrl(int en, const std::string &cam_id)
+/*
+ * Toggle V4L2_CID_WIDE_DYNAMIC_RANGE on the v4l-subdev whose backing kernel
+ * module matches `sensor_module` (e.g. "imx708", "imx585") and whose of_node
+ * symlink targets `cam_id`. Used for sensors that expose their native HDR
+ * mode through this control — IMX708 (its native HDR) and IMX585 (ClearHDR
+ * → 16-bit output, picked up by libcamera's pisp pipeline handler to engage
+ * the SW RawStatsProducer for the high-bit-depth raw path).
+ *
+ * Returns true if a sensor was found AND its control value actually changed.
+ */
+static bool set_sensor_subdev_hdr_ctrl(const char *sensor_module, int en, const std::string &cam_id)
 {
 	for (unsigned int i = 0; i < 16; i++)
 	{
@@ -136,8 +146,8 @@ static bool set_imx708_subdev_hdr_ctrl(int en, const std::string &cam_id)
 		if (fs::exists(module_dir) && fs::is_symlink(module_dir))
 		{
 			fs::path ln = fs::read_symlink(module_dir);
-			if (ln.string().find("imx708") != std::string::npos && fs::is_symlink(id_dir) &&
-				fs::read_symlink(id_dir).string().find(cam_id) != std::string::npos)
+			if (ln.string().find(sensor_module) != std::string::npos &&
+				fs::is_symlink(id_dir) && fs::read_symlink(id_dir).string().find(cam_id) != std::string::npos)
 			{
 				const std::string dev_node { "/dev/v4l-subdev" + std::to_string(i) };
 				int fd = open(dev_node.c_str(), O_RDONLY, 0);
@@ -422,17 +432,35 @@ bool OptsInternal::Parse(boost::program_options::variables_map &vm, RPiCamApp *a
 	{
 		const std::string_view cam_id = *cameras[camera]->properties().get(libcamera::properties::Model);
 
+		// Sensors that expose their native HDR mode through
+		// V4L2_CID_WIDE_DYNAMIC_RANGE on the v4l-subdev: pick the right
+		// module name for the camera and route --hdr through it. Set the
+		// sensor control BEFORE opening or listing any cameras so libcamera
+		// re-enumerates the new (16-bit, on IMX585) sensor modes.
+		const char *hdr_capable_module = nullptr;
 		if (cam_id.find("imx708") != std::string::npos)
+			hdr_capable_module = "imx708";
+		else if (cam_id.find("imx585") != std::string::npos)
+			hdr_capable_module = "imx585";
+
+		if (hdr_capable_module)
 		{
-			// HDR control. Set the sensor control before opening or listing any cameras.
-			// Start by disabling HDR unconditionally. Reset the camera manager if we have
-			// actually switched the value of the control
-			bool changed = set_imx708_subdev_hdr_ctrl(0, cameras[camera]->id());
+			// Start by disabling sensor HDR unconditionally.
+			bool changed = set_sensor_subdev_hdr_ctrl(hdr_capable_module, 0, cameras[camera]->id());
 
 			if (hdr == "sensor" || hdr == "auto")
 			{
-				// Turn on sensor HDR.  Reset the camera manager if we have switched the value of the control.
-				changed |= set_imx708_subdev_hdr_ctrl(1, cameras[camera]->id());
+				// Turn on sensor HDR. On IMX585 this enables ClearHDR. The
+				// pipeline handler picks the right stats path automatically:
+				//   * 16-bit ClearHDR (explicit --mode :16:U) → SW
+				//     RawStatsProducer on the linear u16 buffer.
+				//   * 12-bit ClearHDR (default) → HW NQ stats. The CCMP
+				//     gradation curve preserves R/G/B ratios uniformly so
+				//     HW NQ stats yield correct AWB; AGC adapts to the
+				//     compressed Y distribution.
+				// No hard-coded mode_string — let libcamera's mode-pick
+				// run on whatever resolution the user requested.
+				changed |= set_sensor_subdev_hdr_ctrl(hdr_capable_module, 1, cameras[camera]->id());
 				hdr = "sensor";
 			}
 
