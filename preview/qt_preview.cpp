@@ -17,8 +17,10 @@
 #include <QApplication>
 #include <QImage>
 #include <QMainWindow>
+#include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPen>
 #include <QWidget>
 
 #include "preview.hpp"
@@ -49,12 +51,39 @@ public:
 	}
 	QSize size;
 	QImage image;
+	Preview::FocusCallback on_click;
+	std::mutex marker_mutex;
+	Preview::FocusMarker marker;
 
 protected:
 	void paintEvent(QPaintEvent *) override
 	{
 		QPainter painter(this);
 		painter.drawImage(rect(), image, image.rect());
+
+		Preview::FocusMarker m;
+		{
+			std::lock_guard<std::mutex> lock(marker_mutex);
+			m = marker;
+		}
+		if (m.w > 0)
+		{
+			// yellow = scanning, green = focused, red = failed, white = idle
+			static const QColor colours[] = { Qt::white, Qt::yellow, Qt::green, Qt::red };
+			painter.setPen(QPen(colours[m.state & 3], 2));
+			painter.drawRect(QRectF(m.x * width(), m.y * height(), m.w * width(), m.h * height()));
+		}
+	}
+	// A touchscreen tap arrives here too (Qt synthesises mouse events from touch).
+	void mousePressEvent(QMouseEvent *event) override
+	{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+		const QPointF p = event->position();
+#else
+		const QPointF p = event->localPos();
+#endif
+		if (on_click && event->button() == Qt::LeftButton && width() > 0 && height() > 0)
+			on_click(p.x() / width(), p.y() / height());
 	}
 	QSize sizeHint() const override
 	{
@@ -90,6 +119,11 @@ public:
 	void SetInfoText(const std::string &text) override
 	{
 		main_window_->setWindowTitle(QString::fromStdString(text));
+	}
+	void SetFocusMarker(const FocusMarker &marker) override
+	{
+		std::lock_guard<std::mutex> lock(pane_->marker_mutex);
+		pane_->marker = marker;
 	}
 	virtual void Show(int fd, libcamera::Span<uint8_t> span, StreamInfo const &info) override
 	{
@@ -220,6 +254,10 @@ private:
 		MyMainWindow main_window;
 		main_window_ = &main_window;
 		MyWidget pane(&main_window, window_width_, window_height_);
+		pane.on_click = [this](float x, float y) {
+			if (focus_callback_)
+				focus_callback_(x, y);
+		};
 		main_window.setCentralWidget(&pane);
 		// Need to get the window border sizes (it seems to be unreasonably difficult...)
 		main_window.move(options->Get().preview_x + 2, options->Get().preview_y + 28);

@@ -11,6 +11,7 @@
 #include "core/options.hpp"
 #include "core/rpicam_app.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fcntl.h>
@@ -162,6 +163,11 @@ void RPiCamApp::OpenCamera()
 	camera_acquired_ = true;
 
 	LOG(2, "Acquired camera " << cam_id);
+
+	// Tap/click-to-focus on the preview, when there is a lens to drive.
+	if (options_->Get().touch_focus && camera_->controls().count(&controls::AfMode) > 0 &&
+		camera_->controls().count(&controls::AfWindows) > 0)
+		preview_->SetFocusCallback([this](float x, float y) { focusAt(x, y); });
 
 	if (!options_->Get().post_process_file.empty())
 	{
@@ -767,6 +773,7 @@ void RPiCamApp::StartCamera()
 		}
 		controls_.set(controls::AfMode, afm);
 	}
+	af_continuous_ = controls_.get(controls::AfMode).value_or(-1) == controls::AfModeContinuous;
 	if (!controls_.get(controls::AfRange) && camera_->controls().count(&controls::AfRange) > 0)
 		controls_.set(controls::AfRange, options_->Get().afRange_index);
 	if (!controls_.get(controls::AfSpeed) && camera_->controls().count(&controls::AfSpeed) > 0)
@@ -1279,6 +1286,21 @@ void RPiCamApp::previewThread()
 		// Fill the frame info with the ControlList items and ancillary bits.
 		FrameInfo frame_info(item.completed_request);
 
+		// Track the crop (to map preview taps to the sensor) and show the AF state.
+		{
+			const ControlList &md = item.completed_request->metadata;
+			std::lock_guard<std::mutex> lock(focus_mutex_);
+			if (auto crop = md.get(controls::ScalerCrop))
+				focus_crop_ = *crop;
+			if (focus_w_ > 0)
+			{
+				Preview::FocusMarker marker;
+				marker.x = focus_x_, marker.y = focus_y_, marker.w = focus_w_, marker.h = focus_h_;
+				marker.state = md.get(controls::AfState).value_or(controls::AfStateIdle);
+				preview_->SetFocusMarker(marker);
+			}
+		}
+
 		int fd = buffer->planes()[0].fd.get();
 		{
 			std::lock_guard<std::mutex> lock(preview_mutex_);
@@ -1298,6 +1320,38 @@ void RPiCamApp::previewThread()
 			preview_->SetInfoText(s);
 		}
 	}
+}
+
+// Called by the preview (its own thread) with a tapped point, normalised to the
+// displayed image. Put the AF window there and focus: trigger a scan in auto or
+// manual mode; in continuous mode just move the window and let AF follow.
+void RPiCamApp::focusAt(float x, float y)
+{
+	constexpr float size = 1.0f / 6; // window width/height, as a fraction of the image
+
+	std::lock_guard<std::mutex> lock(focus_mutex_);
+	Rectangle crop = focus_crop_;
+	if (crop.isNull())
+		crop = camera_->controls().at(&controls::ScalerCrop).max().get<Rectangle>();
+
+	const float nx = std::clamp(x - size / 2, 0.0f, 1.0f - size);
+	const float ny = std::clamp(y - size / 2, 0.0f, 1.0f - size);
+	const Rectangle window(crop.x + static_cast<int>(nx * crop.width), crop.y + static_cast<int>(ny * crop.height),
+						   static_cast<unsigned int>(size * crop.width),
+						   static_cast<unsigned int>(size * crop.height));
+
+	ControlList ctrls;
+	ctrls.set(controls::AfMetering, controls::AfMeteringWindows);
+	ctrls.set(controls::AfWindows, libcamera::Span<const Rectangle>(&window, 1));
+	if (!af_continuous_)
+	{
+		ctrls.set(controls::AfMode, controls::AfModeAuto);
+		ctrls.set(controls::AfTrigger, controls::AfTriggerStart);
+	}
+	SetControls(ctrls);
+
+	focus_x_ = nx, focus_y_ = ny, focus_w_ = size, focus_h_ = size;
+	LOG(1, "Focus at " << x << "," << y << ": AfWindows " << window.toString());
 }
 
 void RPiCamApp::configureDenoise(const std::string &denoise_mode)

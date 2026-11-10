@@ -40,6 +40,23 @@ public:
 	virtual void SetInfoText(const std::string &text)
 	{
 	}
+	// Tap/click-to-focus. The preview calls this with the point the user picked,
+	// normalised to the displayed image (0..1, top left origin).
+	typedef std::function<void(float x, float y)> FocusCallback;
+	void SetFocusCallback(FocusCallback callback)
+	{
+		focus_callback_ = callback;
+	}
+	// Focus window overlay, normalised to the displayed image; w == 0 hides it.
+	// state is the libcamera AfState (0 idle, 1 scanning, 2 focused, 3 failed).
+	struct FocusMarker
+	{
+		float x = 0, y = 0, w = 0, h = 0;
+		int state = 0;
+	};
+	virtual void SetFocusMarker(const FocusMarker &marker)
+	{
+	}
 	// Display the buffer. You get given the fd back in the BufferDoneCallback
 	// once its available for re-use.
 	virtual void Show(int fd, libcamera::Span<uint8_t> span, StreamInfo const &info) = 0;
@@ -56,6 +73,7 @@ public:
 
 protected:
 	DoneCallback done_callback_;
+	FocusCallback focus_callback_;
 	Options const *options_;
 };
 

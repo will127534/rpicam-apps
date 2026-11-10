@@ -325,6 +325,8 @@ Options::Options()
 			"Control that determines whether the AF algorithm is to move the lens as quickly as possible or more steadily.(normal, fast)")
 		("autofocus-window", value<std::string>(&v_->afWindow)->default_value("0,0,0,0"),
 		"Sets AfMetering to  AfMeteringWindows an set region used, e.g. 0.25,0.25,0.5,0.5")
+		("touch-focus", value<bool>(&v_->touch_focus)->default_value(true)->implicit_value(true),
+			"Click (or tap) the preview window to autofocus there, with a lens fitted. --touch-focus 0 disables")
 		("lens-position", value<std::string>(&v_->lens_position_)->default_value(""),
 			"Set the lens to a particular focus position, expressed as a reciprocal distance (0 moves the lens to infinity), or \"default\" for the hyperfocal distance")
 		("hdr", value<std::string>(&v_->hdr)->default_value("off")->implicit_value("auto"),
@@ -791,6 +793,7 @@ void OptsInternal::Print() const
 	else
 		std::cerr << "    autofocus-window: " << afWindow_x << "," << afWindow_y << "," << afWindow_width << ","
 				  << afWindow_height << std::endl;
+	std::cerr << "    touch-focus: " << touch_focus << std::endl;
 	if (!lens_position_.empty())
 		std::cerr << "    lens-position: " << lens_position_ << std::endl;
 	std::cerr << "    hdr: " << hdr << std::endl;

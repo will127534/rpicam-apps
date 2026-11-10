@@ -6,6 +6,7 @@
  */
 
 #include <map>
+#include <mutex>
 #include <string>
 
 // Include libcamera stuff before X11, as X11 #defines both Status and None
@@ -38,8 +39,9 @@ public:
 	// Reset the preview window, clearing the current buffers and being ready to
 	// show new ones.
 	virtual void Reset() override;
-	// Check if the window manager has closed the preview.
+	// Check if the window manager has closed the preview (also handles clicks).
 	virtual bool Quit() override;
+	virtual void SetFocusMarker(const FocusMarker &marker) override;
 	// Return the maximum image size allowed.
 	virtual void MaxImageSize(unsigned int &w, unsigned int &h) const override
 	{
@@ -76,6 +78,12 @@ private:
 	int height_;
 	unsigned int max_image_width_;
 	unsigned int max_image_height_;
+	// fraction of the window the (letterboxed, centred) image covers
+	float w_factor_ = 1.0f;
+	float h_factor_ = 1.0f;
+	std::mutex marker_mutex_;
+	FocusMarker marker_;
+	void drawMarker();
 };
 
 static GLint compile_shader(GLenum target, const char *source)
@@ -132,13 +140,15 @@ static GLint link_program(GLint vs, GLint fs)
 	return prog;
 }
 
-static void gl_setup(int width, int height, int window_width, int window_height)
+static void gl_setup(int width, int height, int window_width, int window_height, float &w_out, float &h_out)
 {
 	float w_factor = width / (float)window_width;
 	float h_factor = height / (float)window_height;
 	float max_dimension = std::max(w_factor, h_factor);
 	w_factor /= max_dimension;
 	h_factor /= max_dimension;
+	w_out = w_factor;
+	h_out = h_factor;
 	char vs[256];
 	snprintf(vs, sizeof(vs),
 			 "attribute vec4 pos;\n"
@@ -285,7 +295,7 @@ void EglPreview::makeWindow(char const *name)
 	attr.background_pixel = 0;
 	attr.border_pixel = 0;
 	attr.colormap = XCreateColormap(display_, root, visinfo->visual, AllocNone);
-	attr.event_mask = StructureNotifyMask | ExposureMask | KeyPressMask;
+	attr.event_mask = StructureNotifyMask | ExposureMask | KeyPressMask | ButtonPressMask;
 	/* XXX this is a bad way to get a borderless window! */
 	mask = CWBackPixel | CWBorderPixel | CWColormap | CWEventMask;
 
@@ -358,7 +368,7 @@ void EglPreview::makeBuffer(int fd, size_t size, StreamInfo const &info, Buffer 
 		// This stuff has to be delayed until we know we're in the thread doing the display.
 		if (!eglMakeCurrent(egl_display_, egl_surface_, egl_surface_, egl_context_))
 			throw std::runtime_error("eglMakeCurrent failed");
-		gl_setup(info.width, info.height, width_, height_);
+		gl_setup(info.width, info.height, width_, height_, w_factor_, h_factor_);
 		first_time_ = false;
 	}
 
@@ -429,6 +439,7 @@ void EglPreview::Show(int fd, libcamera::Span<uint8_t> span, StreamInfo const &i
 
 	glBindTexture(GL_TEXTURE_EXTERNAL_OES, buffer.texture);
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	drawMarker();
 	EGLBoolean success [[maybe_unused]] = eglSwapBuffers(egl_display_, egl_surface_);
 	if (last_fd_ >= 0)
 		done_callback_(last_fd_);
@@ -448,12 +459,62 @@ void EglPreview::Reset()
 bool EglPreview::Quit()
 {
 	XEvent event;
+	// Clicks (and touchscreen taps) on the image: undo the letterboxing.
+	while (XCheckTypedWindowEvent(display_, window_, ButtonPress, &event))
+	{
+		if (event.xbutton.button != Button1 || !focus_callback_)
+			continue;
+		float x = (event.xbutton.x / (float)width_ - 0.5f) / w_factor_ + 0.5f;
+		float y = (event.xbutton.y / (float)height_ - 0.5f) / h_factor_ + 0.5f;
+		if (x >= 0 && x <= 1 && y >= 0 && y <= 1)
+			focus_callback_(x, y);
+	}
 	while (XCheckTypedWindowEvent(display_, window_, ClientMessage, &event))
 	{
 		if (static_cast<Atom>(event.xclient.data.l[0]) == wm_delete_window_)
 			return true;
 	}
 	return false;
+}
+
+void EglPreview::SetFocusMarker(const FocusMarker &marker)
+{
+	std::lock_guard<std::mutex> lock(marker_mutex_);
+	marker_ = marker;
+}
+
+// Draw the focus window as four thin scissored clears (no extra shader needed).
+void EglPreview::drawMarker()
+{
+	FocusMarker m;
+	{
+		std::lock_guard<std::mutex> lock(marker_mutex_);
+		m = marker_;
+	}
+	if (m.w <= 0)
+		return;
+
+	// yellow = scanning, green = focused, red = failed, white = idle
+	static const float colours[4][3] = { { 1, 1, 1 }, { 1, 1, 0 }, { 0, 1, 0 }, { 1, 0, 0 } };
+	const float *c = colours[m.state & 3];
+	const float img_w = width_ * w_factor_, img_h = height_ * h_factor_;
+	const float x0 = (width_ - img_w) / 2, y0 = (height_ - img_h) / 2;
+	const int l = x0 + m.x * img_w, r = x0 + (m.x + m.w) * img_w;
+	// GL's origin is bottom left
+	const int b = height_ - (y0 + (m.y + m.h) * img_h), t = height_ - (y0 + m.y * img_h);
+	const int th = 3;
+
+	glEnable(GL_SCISSOR_TEST);
+	glClearColor(c[0], c[1], c[2], 1);
+	glScissor(l, b, r - l, th);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glScissor(l, t - th, r - l, th);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glScissor(l, b, th, t - b);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glScissor(r - th, b, th, t - b);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glDisable(GL_SCISSOR_TEST);
 }
 
 static Preview *Create(Options const *options)

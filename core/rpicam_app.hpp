@@ -259,6 +259,7 @@ private:
 	void startPreview();
 	void stopPreview();
 	void previewThread();
+	void focusAt(float x, float y);
 	void configureDenoise(const std::string &denoise_mode);
 	Mode selectMode(const Mode &mode) const;
 
@@ -288,6 +289,11 @@ private:
 	uint32_t preview_frames_displayed_ = 0;
 	uint32_t preview_frames_dropped_ = 0;
 	std::thread preview_thread_;
+	// Tap/click-to-focus: last ScalerCrop seen, AF window as shown, AF mode.
+	std::mutex focus_mutex_;
+	libcamera::Rectangle focus_crop_;
+	float focus_x_ = 0, focus_y_ = 0, focus_w_ = 0, focus_h_ = 0;
+	bool af_continuous_ = false;
 	// For setting camera controls.
 	std::mutex control_mutex_;
 	ControlList controls_;

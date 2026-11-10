@@ -259,6 +259,7 @@ struct OptsInternal
 	int afSpeed_index;
 	std::string afWindow;
 	float afWindow_x, afWindow_y, afWindow_width, afWindow_height;
+	bool touch_focus;
 	std::optional<float> lens_position;
 	bool set_default_lens_position;
 	bool af_on_capture;
